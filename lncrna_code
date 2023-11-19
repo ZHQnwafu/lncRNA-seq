@@ -1,0 +1,66 @@
+Due to differences in personal computer folders, the main code is attached：
+The data delivered to us by BGI is pure data filtered by SOAPnuke, and we directly perform comparison and analysis.
+(1)Mapping:
+hisat2 -x ARS-UCD1.2_Btau5.0.1Y.fa -1 A1_1.fq.gz -2 A1_2.fq.gz | /home/wangwenxiang/zhaohuangqing/biosoft/samtools-1.9/samtools sort -@ 6 -o 1A.bam  
+(2)stringtie：
+gtf=./ARS-UCD1.2_Btau5.0.1Y.gtf
+ls *bam |while read id
+do
+echo $id
+stringtie ${id} -G $gtf -o ${id}.gtf -l $id 
+done      
+ls *gtf > gtf.list
+stringtie --merge -p 6 -G $gtf -o stringtie_merged.gtf  gtf.list > merge.log 2>&1 
+gffcompare -r $gtf -o gffcomp  stringtie_merged.gtf
+(3)# Statistics class code type
+awk '$3!~/class/ {print $3}' stringtie_merged.gtf.tmap | sort -V | uniq -c > types.txt
+#Filter, only keep transcripts with class_code="u","x","i","j","o"
+awk '{if ($3=="u" || $3=="x" || $3=="i" || $3=="j" || $3=="o"){print $0}}' ~./merged.stringtie_merged.gtf.tmap > filter1_by_uxijo.tmap
+$ wc -l filter1_by_uxijo.tmap
+# Filter, only keep transcripts with exon>1 and length>200bp
+awk '($6>1 && $10>=200){print$0}' filter1_by_uxijo.tmap > filter2_by_exon_length.tmap
+$ wc -l filter2_by_exon_length.tmap
+awk '{print $5}' filter2_by_exon_length.tmap > filter2_transcript_ID (exon=1 is not processed cleanly, use excel to filter)
+grep -Ff filter2_transcript_ID -w gffcomp.annotated.gtf > filter2_transcript.gtf
+# The exons of the remaining transcripts form gtf
+awk '($3=="exon"){print$0}' filter2_transcript.gtf > filter2_transcript_exon.gtf
+# Extract the genome sequence based on exon position information and assemble it into a transcript sequence
+gffread -w filter2_transcript_exon.fa -g ./ARS-UCD1.2_Btau5.0.1Y.fa ./filter2_transcript_exon.gtf
+$ grep -c "^>" filter2_transcript_exon.fa
+# Filter, only keep transcripts with exon>1 and length>200bp
+awk '($6>1 && $10>=200){print$0}' ../step1/filter1_by_uxijo.tmap > filter2_by_exon_length.tmap
+$ wc -l filter2_by_exon_length.tmap
+(4)Transcript coding ability prediction
+
+nohup python CNCI.py \
+-f ~/filter2_transcript_exon.fa \
+-o ~./CNCI \
+-m ve \
+-p 4 > cnci.log 2>&1 &
+
+
+python CPC2.py -i ~/lncRNA_project/07.identification/step2/filter2_transcript_exon.fa -o ~/lncRNA_project/07.identification/step3/CPC2/CPC2_result.txt > cpc2.log 2>&1 
+less CPC2_result.txt|grep 'noncoding'|awk '{print $1}'> CPC2_id.txt
+
+ python PLEK.py \
+-fasta ~/filter2_transcript_exon.fa \
+-out ~/plek \
+-thread 4 > plek.log 2>&1 
+
+
+(5)Compare to Pfam database
+# Use Transeq to translate the transcript sequence into 6 possible protein sequences
+transeq ../step3/intersection/filter3_by_noncoding_exon.fa filter4_protein.fa -frame=6
+
+conda install pfam_scan
+nohup pfam_scan.pl -fasta ./filter4_protein.fa -dir /home/data/lihe/database/Pfam/ -out Pfam_scan.out > Pfam_scan.log 2>&1 &
+# Filter (E-value < 1e-5)
+grep -v '^#' Pfam_scan.out | grep -v '^\s*$' | awk '($13< 1e-5){print $1}'| awk -F "_" '{print$1}' | sort | uniq > coding.ID
+
+## Just filter fastq files directly
+grep -v -f coding.ID ../step3/intersection/filter3_transcript_ID > filter4_transcript_ID
+grep -Ff filter4_transcript_ID -w ../filter3_by_noncoding.gtf > filter4_by_pfam.gtf
+awk '($3=="exon"){print$0}' filter4_by_pfam.gtf > filter4_by_pfam_exon.gtf
+gffread -w filter4_by_pfam_exon.fa -g ./ARS-UCD1.2_Btau5.0.1Y.fa filter4_by_pfam_exon.gtf
+
+
